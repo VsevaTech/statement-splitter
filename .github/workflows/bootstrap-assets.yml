@@ -41,12 +41,23 @@ jobs:
         env:
           DATABASE_URL: sqlite:///./data/bootstrap.db
         run: |
-          set -x
-          pip install playwright
-          python -m playwright install --with-deps chromium
-          nohup python -m uvicorn app.main:app --port 8000 > uvicorn.log 2>&1 &
-          for i in $(seq 1 30); do curl -fs http://localhost:8000/health && break; sleep 1; done
-          python scripts/take_screenshots.py http://localhost:8000 || cat uvicorn.log
+          {
+            pip install playwright
+            python -m playwright install --with-deps chromium
+            nohup python -m uvicorn app.main:app --port 8000 > uvicorn.log 2>&1 &
+            for i in $(seq 1 30); do curl -fs http://localhost:8000/health && break; sleep 2; done
+            python scripts/take_screenshots.py http://localhost:8000
+            ls -la docs
+          } > screenshots.log 2>&1 || echo "screenshot step failed" >> screenshots.log
+          # Mirror the log into the run summary so failures are visible without log access.
+          {
+            echo '### Screenshot step'
+            echo '```'
+            tail -c 3000 screenshots.log
+            echo '--- uvicorn ---'
+            tail -c 1000 uvicorn.log 2>/dev/null || echo "(no uvicorn log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Commit assets
         if: steps.check.outputs.missing == '1'
         run: |
@@ -54,10 +65,13 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           for f in demo-data/statement.csv demo-data/statement-2.csv demo-data/statement.xlsx \
                    docs/screenshot-review.png docs/screenshot-home.png; do
-            [ -f "$f" ] && git add -f "$f"
+            [ -f "$f" ] || continue
+            # Only add assets the repository does not have yet; never churn tracked ones.
+            if git ls-files --error-unmatch "$f" > /dev/null 2>&1; then continue; fi
+            git add -f "$f"
           done
           if git diff --cached --quiet; then
-            echo "nothing to commit"
+            echo "nothing to commit" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           git commit -m "chore: add generated synthetic demo statements and README screenshots"
