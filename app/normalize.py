@@ -32,9 +32,7 @@ _PROCESSOR_PREFIXES = (
     "PAYMENT TO",
 )
 _NOISE_TOKENS = {"LTD", "LTD.", "LLC", "INC", "INC.", "CO", "CO.", "GMBH", "BV", "B.V.", "SARL", "LIMITED"}
-_REF_TOKEN = re.compile(
-    r"^[#*]?(?:\d{4,}|\d+[\-/.:][\d\-/.:]+|[A-Z]{0,2}\d{4,}[A-Z0-9]*|[A-Z0-9]*\d{5,}[A-Z0-9]*)$"
-)
+_REF_TOKEN = re.compile(r"^[#*]?(?:\d{4,}|\d+[\-/.:][\d\-/.:]+|[A-Z]{0,2}\d{4,}[A-Z0-9]*|[A-Z0-9]*\d{5,}[A-Z0-9]*)$")
 _CARD_FRAGMENT = re.compile(r"^(?:X{2,}|\*{2,})\d{2,4}$|^\d{4}X{4,}$", re.IGNORECASE)
 _URL_SUFFIX = re.compile(r"\.(COM|IO|CO|NET|ORG|IL|DE|UK|CO\.IL)\b")
 
