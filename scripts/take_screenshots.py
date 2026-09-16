@@ -24,7 +24,10 @@ def main(base_url: str = "http://localhost:8000") -> None:
         resp = client.post(
             "/upload", files={"file": ("statement.csv", (ROOT / "demo-data" / "statement.csv").read_bytes())}
         )
-        resp.raise_for_status()
+        # A successful upload answers 303 with the statement URL; httpx would treat
+        # that redirect as an error, so check it explicitly.
+        if resp.status_code != 303 or "location" not in resp.headers:
+            raise SystemExit(f"upload failed: HTTP {resp.status_code} {resp.text[:200]}")
         statement_path = resp.headers["location"]
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
