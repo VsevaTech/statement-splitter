@@ -43,21 +43,16 @@ jobs:
         run: |
           {
             pip install playwright
-            python -m playwright install --with-deps chromium
+            # System deps are already present on ubuntu-latest; --with-deps would need apt/sudo.
+            python -m playwright install chromium
             nohup python -m uvicorn app.main:app --port 8000 > uvicorn.log 2>&1 &
             for i in $(seq 1 30); do curl -fs http://localhost:8000/health && break; sleep 2; done
             python scripts/take_screenshots.py http://localhost:8000
             ls -la docs
-          } > screenshots.log 2>&1 || echo "screenshot step failed" >> screenshots.log
-          # Mirror the log into the run summary so failures are visible without log access.
-          {
-            echo '### Screenshot step'
-            echo '```'
-            tail -c 3000 screenshots.log
-            echo '--- uvicorn ---'
-            tail -c 1000 uvicorn.log 2>/dev/null || echo "(no uvicorn log)"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > screenshots.log 2>&1 || echo "SCREENSHOT STEP FAILED" >> screenshots.log
+          # Annotations are readable without log access, unlike the job summary.
+          echo "::warning title=screenshot-log::$(tail -c 700 screenshots.log | tr '\n' ' ' | tr -d '%')"
+          echo "::warning title=uvicorn-log::$(tail -c 300 uvicorn.log 2>/dev/null | tr '\n' ' ' | tr -d '%')"
       - name: Commit assets
         if: steps.check.outputs.missing == '1'
         run: |
