@@ -1,0 +1,55 @@
+# One-time helper: (re)creates generated demo assets — the synthetic statements in
+# demo-data/ (deterministic, see scripts/generate_demo_data.py) and the README
+# screenshots. It only does anything when one of those files is missing from the repo.
+name: Bootstrap binary assets
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check which assets are missing
+        id: check
+        run: |
+          missing=0
+          for f in demo-data/statement.csv demo-data/statement-2.csv demo-data/statement.xlsx docs/screenshot-review.png docs/screenshot-home.png; do
+            [ -f "$f" ] || { echo "missing: $f"; missing=1; }
+          done
+          echo "missing=$missing" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.missing == '1'
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        if: steps.check.outputs.missing == '1'
+        run: |
+          pip install -r requirements-dev.txt playwright
+          playwright install --with-deps chromium
+      - name: Generate demo data
+        if: steps.check.outputs.missing == '1'
+        run: python scripts/generate_demo_data.py
+      - name: Take screenshots
+        if: steps.check.outputs.missing == '1'
+        env:
+          DATABASE_URL: sqlite:///./data/bootstrap.db
+        run: |
+          uvicorn app.main:app --port 8000 &
+          for i in $(seq 1 30); do curl -fs http://localhost:8000/health && break; sleep 1; done
+          python scripts/take_screenshots.py http://localhost:8000
+          kill %1
+      - name: Commit assets
+        if: steps.check.outputs.missing == '1'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f demo-data/statement.csv demo-data/statement-2.csv demo-data/statement.xlsx docs/screenshot-review.png docs/screenshot-home.png
+          git commit -m "chore: add generated synthetic demo statements and README screenshots" || exit 0
+          git push

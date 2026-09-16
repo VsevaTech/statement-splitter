@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Ruff (lint)
+        run: ruff check .
+      - name: Ruff (format)
+        run: ruff format --check .
+      - name: Demo data is reproducible (also builds statement.xlsx for the tests)
+        run: |
+          python scripts/generate_demo_data.py
+          git diff --exit-code -- demo-data/statement.csv demo-data/statement-2.csv
+      - name: Pytest
+        run: pytest
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t statement-splitter:ci .
+      - name: Smoke test container
+        run: |
+          docker run -d --name ss -p 8000:8000 statement-splitter:ci
+          for i in $(seq 1 20); do
+            if curl -fs http://localhost:8000/health; then ok=1; break; fi
+            sleep 1
+          done
+          [ "${ok:-0}" = "1" ] || (docker logs ss; exit 1)
+          curl -fs -o /dev/null -w "%{http_code}\n" http://localhost:8000/
+          docker rm -f ss
