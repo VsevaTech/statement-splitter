@@ -1,7 +1,7 @@
 # One-time helper: (re)creates generated demo assets — the synthetic statements in
 # demo-data/ (deterministic, see scripts/generate_demo_data.py) and the README
 # screenshots. It only does anything when one of those files is missing from the repo.
-name: Bootstrap binary assets
+name: Bootstrap generated assets
 
 on:
   push:
@@ -20,7 +20,8 @@ jobs:
         id: check
         run: |
           missing=0
-          for f in demo-data/statement.csv demo-data/statement-2.csv demo-data/statement.xlsx docs/screenshot-review.png docs/screenshot-home.png; do
+          for f in demo-data/statement.csv demo-data/statement-2.csv demo-data/statement.xlsx \
+                   docs/screenshot-review.png docs/screenshot-home.png; do
             [ -f "$f" ] || { echo "missing: $f"; missing=1; }
           done
           echo "missing=$missing" >> "$GITHUB_OUTPUT"
@@ -30,26 +31,34 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         if: steps.check.outputs.missing == '1'
-        run: |
-          pip install -r requirements-dev.txt playwright
-          playwright install --with-deps chromium
-      - name: Generate demo data
+        run: pip install -r requirements-dev.txt
+      - name: Generate synthetic demo data
         if: steps.check.outputs.missing == '1'
         run: python scripts/generate_demo_data.py
-      - name: Take screenshots
+      - name: Take README screenshots (best effort)
         if: steps.check.outputs.missing == '1'
+        continue-on-error: true
         env:
           DATABASE_URL: sqlite:///./data/bootstrap.db
         run: |
-          uvicorn app.main:app --port 8000 &
+          set -x
+          pip install playwright
+          python -m playwright install --with-deps chromium
+          nohup python -m uvicorn app.main:app --port 8000 > uvicorn.log 2>&1 &
           for i in $(seq 1 30); do curl -fs http://localhost:8000/health && break; sleep 1; done
-          python scripts/take_screenshots.py http://localhost:8000
-          kill %1
+          python scripts/take_screenshots.py http://localhost:8000 || cat uvicorn.log
       - name: Commit assets
         if: steps.check.outputs.missing == '1'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f demo-data/statement.csv demo-data/statement-2.csv demo-data/statement.xlsx docs/screenshot-review.png docs/screenshot-home.png
-          git commit -m "chore: add generated synthetic demo statements and README screenshots" || exit 0
+          for f in demo-data/statement.csv demo-data/statement-2.csv demo-data/statement.xlsx \
+                   docs/screenshot-review.png docs/screenshot-home.png; do
+            [ -f "$f" ] && git add -f "$f"
+          done
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore: add generated synthetic demo statements and README screenshots"
           git push
