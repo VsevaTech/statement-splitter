@@ -1,0 +1,17 @@
+services:
+  app:
+    build: .
+    image: statement-splitter:local
+    ports:
+      - "8000:8000"
+    environment:
+      # AI is optional. Leave GEMINI_API_KEY empty to run fully offline.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+      DATABASE_URL: sqlite:////data/statement_splitter.db
+    volumes:
+      - statement_data:/data
+    restart: unless-stopped
+
+volumes:
+  statement_data:
