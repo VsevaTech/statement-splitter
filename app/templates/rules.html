@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Merchant rules · Statement Splitter{% endblock %}
+{% block content %}
+<h1>Saved merchant rules</h1>
+<p class="lead">These are your corrections. A saved rule always wins over built-in rules and AI suggestions.</p>
+<section class="card">
+{% if rules %}
+<table class="compact">
+  <thead><tr><th>Merchant key</th><th>Category</th><th>Updated</th><th></th></tr></thead>
+  <tbody>
+  {% for r in rules %}
+    <tr>
+      <td><code>{{ r.merchant_key }}</code></td>
+      <td>{{ r.category }}</td>
+      <td class="muted">{{ r.updated_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td class="right"><form method="post" action="/rules/{{ r.id }}/delete" class="inline"><button class="small danger">Delete</button></form></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No rules yet. Correct a category in a statement (with “remember” ticked) or use “Apply to all similar”.</p>
+{% endif %}
+</section>
+{% endblock %}

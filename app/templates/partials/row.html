@@ -1,0 +1,38 @@
+<tr id="tx-{{ tx.id }}" class="{{ 'review' if tx.category is none else '' }} {{ tx.direction }}">
+  <td class="nowrap">{{ tx.date or '—' }}</td>
+  <td>
+    <div class="desc">{{ tx.description }}</div>
+    <div class="muted small">{{ tx.normalized_merchant }}</div>
+  </td>
+  <td class="right nowrap {{ 'pos' if tx.amount > 0 else 'neg' }}">{{ '%.2f' | format(tx.amount) }}</td>
+  <td>{{ tx.currency }}</td>
+  <td>
+    <form hx-post="/transactions/{{ tx.id }}/category" hx-target="#table-region" hx-swap="innerHTML" hx-trigger="change from:select" class="cat-form">
+      <input type="hidden" name="filter" value="{{ current_filter }}">
+      <select name="category" class="{{ 'needs' if tx.category is none else '' }}">
+        <option value="" disabled {% if tx.category is none %}selected{% endif %}>Needs review</option>
+        {% for c in categories %}
+          <option value="{{ c }}" {% if tx.category == c %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+      <label class="tiny" title="Save a merchant rule so this merchant is categorized automatically next time">
+        <input type="checkbox" name="remember" value="on" checked> remember
+      </label>
+    </form>
+  </td>
+  <td><span class="source {{ tx.category_source }}">{{ tx.category_source }}</span>
+      {% if tx.confidence and tx.category_source in ('ai','builtin') %}<span class="muted small">{{ '%.0f' | format(tx.confidence * 100) }}%</span>{% endif %}
+  </td>
+  <td class="nowrap">
+    {% if tx.category %}
+    <form hx-post="/statements/{{ statement_id }}/apply-similar" hx-target="#table-region" hx-swap="innerHTML" class="inline">
+      <input type="hidden" name="merchant_key" value="{{ tx.normalized_merchant }}">
+      <input type="hidden" name="category" value="{{ tx.category }}">
+      <input type="hidden" name="filter" value="{{ current_filter }}">
+      <button class="small" type="submit" title="Apply this category to all similar merchants and save the rule">
+        Apply to all similar
+      </button>
+    </form>
+    {% endif %}
+  </td>
+</tr>

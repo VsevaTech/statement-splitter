@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <h1>Turn messy bank statements into categorized expense reports</h1>
+  <p class="lead">Upload a CSV or XLSX statement → review categories → export a clean XLSX report.
+     Corrections are remembered per merchant, so the next statement is categorized automatically.</p>
+</section>
+
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<section class="card">
+  <h2>1. Upload a statement</h2>
+  <form action="/upload" method="post" enctype="multipart/form-data" class="upload-form">
+    <input type="file" name="file" accept="{{ extensions | join(',') }}" required>
+    <button type="submit" class="primary">Analyze statement</button>
+  </form>
+  <p class="muted">Supported: CSV (any delimiter, common encodings) and XLSX. Columns are detected automatically;
+     you will only be asked to map them when detection is not confident.</p>
+</section>
+
+<section class="card">
+  <h2>Settings</h2>
+  <form action="/settings/ai" method="post" class="inline-form">
+    <input type="hidden" name="next" value="/">
+    <label class="switch">
+      <input type="checkbox" name="use_ai" value="on" {% if ai_enabled %}checked{% endif %} {% if not ai_configured %}disabled{% endif %}
+             onchange="this.form.submit()">
+      Use AI suggestions: <strong>{{ 'ON' if ai_enabled else 'OFF' }}</strong>
+    </label>
+  </form>
+  <p class="muted">
+    {% if ai_configured %}Gemini model <code>{{ ai_model }}</code> is configured via environment.{% else %}
+    <strong>{{ ai_unavailable_message }}</strong> — set <code>GEMINI_API_KEY</code> in <code>.env</code> to enable the optional fallback.{% endif %}
+    AI suggestions are optional. Only unknown merchant descriptions are sent to the configured AI provider.
+  </p>
+</section>
+
+{% if statements %}
+<section class="card">
+  <h2>Recent statements</h2>
+  <table class="compact">
+    <thead><tr><th>Uploaded</th><th>File</th><th>Transactions</th><th></th></tr></thead>
+    <tbody>
+    {% for s in statements %}
+      <tr>
+        <td>{{ s.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td><a href="/statements/{{ s.id }}">{{ s.filename }}</a></td>
+        <td>{{ s.transactions | length }}</td>
+        <td class="right">
+          <a class="button small" href="/statements/{{ s.id }}/export">Export XLSX</a>
+          <form action="/statements/{{ s.id }}/delete" method="post" class="inline"><button class="small danger">Delete</button></form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}

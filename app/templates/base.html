@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Statement Splitter{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/htmx.org@1.9.12" crossorigin="anonymous"></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">✂️ Statement Splitter</a>
+  <nav>
+    <a href="/">Upload</a>
+    <a href="/rules">Merchant rules</a>
+    <span class="badge {{ 'on' if (ai_enabled and ai_configured) else 'off' }}" title="AI suggestions are optional. Only unknown merchant descriptions are sent to the configured AI provider.">
+      AI: {% if not ai_configured %}{{ ai_unavailable_message }}{% elif ai_enabled %}ON ({{ ai_model }}){% else %}OFF{% endif %}
+    </span>
+  </nav>
+</header>
+<main class="container">
+  {% block content %}{% endblock %}
+</main>
+<footer class="footer">
+  <p>AI suggestions are optional. Only unknown merchant descriptions are sent to the configured AI provider.
+     Statements are processed locally; the source file is never stored.</p>
+  <p>Statement Splitter v{{ version }} · MIT</p>
+</footer>
+</body>
+</html>

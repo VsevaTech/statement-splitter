@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Review · {{ statement.filename }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ statement.filename }}</h1>
+    <p class="muted">Uploaded {{ statement.created_at.strftime('%Y-%m-%d %H:%M') }} · statement {{ statement.id[:8] }}</p>
+  </div>
+  <div class="actions">
+    <a class="button primary" href="/statements/{{ statement.id }}/export">⬇ Export categorized-expenses.xlsx</a>
+    <a class="button" href="/">Upload another</a>
+  </div>
+</div>
+
+<div id="table-region">
+  {% include "partials/table.html" with context %}
+</div>
+{% endblock %}

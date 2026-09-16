@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Map columns · Statement Splitter{% endblock %}
+{% block content %}
+<h1>Map columns</h1>
+<p class="lead">We could not confidently detect all columns in <strong>{{ pending.filename }}</strong> ({{ row_count }} rows).
+   Tell us which column is which.</p>
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+<form method="post" action="/uploads/{{ pending.id }}/map" class="card mapping-form">
+  {% macro select(name, label, required=False) %}
+  <label>
+    <span>{{ label }}{% if required %} *{% endif %}</span>
+    <select name="{{ name }}">
+      <option value="">— not present —</option>
+      {% for c in columns %}
+        <option value="{{ c }}" {% if detected[name] == c %}selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% endmacro %}
+  <div class="grid">
+    {{ select('date', 'Date', True) }}
+    {{ select('description', 'Description / Merchant', True) }}
+    {{ select('amount', 'Amount (signed)') }}
+    {{ select('debit', 'Debit (expenses)') }}
+    {{ select('credit', 'Credit (income)') }}
+    {{ select('currency', 'Currency') }}
+    {{ select('direction', 'Debit/Credit indicator') }}
+    <label><span>Default currency</span>
+      <input name="default_currency" value="{{ detected.default_currency }}" maxlength="3" pattern="[A-Za-z]{3}"></label>
+  </div>
+  <p class="muted">Provide either a signed <em>Amount</em> column or <em>Debit</em>/<em>Credit</em> columns.
+     Currency falls back to the default when the file has no currency column.</p>
+  <button class="primary" type="submit">Continue</button>
+</form>
+
+<section class="card">
+  <h2>Preview</h2>
+  <div class="scroll">
+  <table class="compact">
+    <thead><tr>{% for c in columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+    <tbody>
+      {% for row in preview %}<tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}

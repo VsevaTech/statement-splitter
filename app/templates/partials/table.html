@@ -1,0 +1,35 @@
+{% set statement_id = statement_id if statement_id is defined else statement.id %}
+<section class="summary" id="summary">
+  <div class="stat"><span class="num">{{ summary.transactions }}</span><span>Transactions</span></div>
+  <div class="stat ok"><span class="num">{{ summary.auto_categorized }}</span><span>Auto categorized</span></div>
+  <div class="stat warn"><span class="num">{{ summary.needs_review }}</span><span>Needs review</span></div>
+  <div class="stat"><span class="num">{{ summary.personal }}</span><span>Personal</span></div>
+  <div class="stat"><span class="num">{{ summary.income }}</span><span>Income</span></div>
+  <div class="stat"><span class="num">{{ summary.manual }}</span><span>Corrected</span></div>
+</section>
+
+<nav class="filters" id="filters">
+  {% for key, label in [('all','All'),('review','Needs review'),('expenses','Expenses'),('income','Income'),('personal','Personal')] %}
+    <a class="chip {% if current_filter == key %}active{% endif %}"
+       href="/statements/{{ statement_id }}?filter={{ key }}"
+       hx-get="/statements/{{ statement_id }}/table?filter={{ key }}"
+       hx-target="#table-region" hx-push-url="/statements/{{ statement_id }}?filter={{ key }}">{{ label }}</a>
+  {% endfor %}
+</nav>
+
+{% if flash %}<div class="alert ok" id="flash">{{ flash }}</div>{% endif %}
+
+<div class="scroll">
+<table class="tx" id="tx-table">
+  <thead>
+    <tr><th>Date</th><th>Description</th><th class="right">Amount</th><th>Currency</th><th>Category</th><th>Source</th><th></th></tr>
+  </thead>
+  <tbody>
+  {% for tx in transactions %}
+    {% include "partials/row.html" %}
+  {% else %}
+    <tr><td colspan="7" class="muted center">Nothing here — {% if current_filter == 'review' %}everything is categorized 🎉{% else %}no transactions match this filter{% endif %}.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
