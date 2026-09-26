@@ -1,6 +1,10 @@
-# One-time helper: (re)creates generated demo assets — the synthetic statements in
-# demo-data/ (deterministic, see scripts/generate_demo_data.py) and the README
-# screenshots. It only does anything when one of those files is missing from the repo.
+# Generated demo assets: the synthetic statements in demo-data/ (deterministic, see
+# scripts/generate_demo_data.py) and the README screenshots.
+#
+# Binary assets are (re)built here instead of being committed by hand. The job runs when an
+# asset is missing, or when docs/ASSETS_VERSION (bumped in a normal commit) differs from
+# docs/.assets-built (written by this job). It commits only the asset files below and then
+# dispatches CI for the resulting commit (pushes made with GITHUB_TOKEN do not trigger CI).
 name: Bootstrap generated assets
 
 on:
@@ -10,64 +14,89 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   bootstrap:
     runs-on: ubuntu-latest
+    env:
+      ASSETS: >-
+        demo-data/statement.csv demo-data/statement-2.csv demo-data/statement.xlsx
+        demo-data/statement-balanced.csv demo-data/statement-unbalanced.csv
+        docs/screenshot-review.png docs/screenshot-home.png
+        docs/screenshot-integrity.png docs/screenshot-skipped-rows.png
     steps:
       - uses: actions/checkout@v4
-      - name: Check which assets are missing
+      - name: Check which assets are missing or stale
         id: check
         run: |
           missing=0
-          for f in demo-data/statement.csv demo-data/statement-2.csv demo-data/statement.xlsx \
-                   docs/screenshot-review.png docs/screenshot-home.png; do
+          for f in $ASSETS; do
             [ -f "$f" ] || { echo "missing: $f"; missing=1; }
           done
-          echo "missing=$missing" >> "$GITHUB_OUTPUT"
+          wanted="$(cat docs/ASSETS_VERSION 2>/dev/null || echo 0)"
+          built="$(cat docs/.assets-built 2>/dev/null || echo none)"
+          stale=0
+          if [ "$wanted" != "$built" ]; then echo "stale: wanted $wanted, built $built"; stale=1; fi
+          run=0; [ "$missing" = "1" ] || [ "$stale" = "1" ] && run=1
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "stale=$stale" >> "$GITHUB_OUTPUT"
+          echo "wanted=$wanted" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
-        if: steps.check.outputs.missing == '1'
+        if: steps.check.outputs.run == '1'
         with:
           python-version: "3.12"
       - name: Install dependencies
-        if: steps.check.outputs.missing == '1'
+        if: steps.check.outputs.run == '1'
         run: pip install -r requirements-dev.txt
       - name: Generate synthetic demo data
-        if: steps.check.outputs.missing == '1'
+        if: steps.check.outputs.run == '1'
         run: python scripts/generate_demo_data.py
-      - name: Take README screenshots (best effort)
-        if: steps.check.outputs.missing == '1'
+      - name: Take README screenshots
+        id: shots
+        if: steps.check.outputs.run == '1'
         continue-on-error: true
         env:
           DATABASE_URL: sqlite:///./data/bootstrap.db
         run: |
-          {
-            pip install playwright
-            # System deps are already present on ubuntu-latest; --with-deps would need apt/sudo.
-            python -m playwright install chromium
-            nohup python -m uvicorn app.main:app --port 8000 > uvicorn.log 2>&1 &
-            for i in $(seq 1 30); do curl -fs http://localhost:8000/health && break; sleep 2; done
-            python scripts/take_screenshots.py http://localhost:8000
-            ls -la docs
-          } > screenshots.log 2>&1 || echo "SCREENSHOT STEP FAILED" >> screenshots.log
-          # Annotations are readable without log access, unlike the job summary.
-          echo "::warning title=screenshot-log::$(tail -c 700 screenshots.log | tr '\n' ' ' | tr -d '%')"
-          echo "::warning title=uvicorn-log::$(tail -c 300 uvicorn.log 2>/dev/null | tr '\n' ' ' | tr -d '%')"
+          set -o pipefail
+          pip install playwright
+          # System deps are already present on ubuntu-latest; --with-deps would need apt/sudo.
+          python -m playwright install chromium
+          nohup python -m uvicorn app.main:app --port 8000 > uvicorn.log 2>&1 &
+          for i in $(seq 1 30); do curl -fs http://localhost:8000/health && break; sleep 2; done
+          python scripts/take_screenshots.py http://localhost:8000
+          python scripts/check_demo_integrity.py http://localhost:8000
+          ls -la docs
+          echo "ok=1" >> "$GITHUB_OUTPUT"
       - name: Commit assets
-        if: steps.check.outputs.missing == '1'
+        if: steps.check.outputs.run == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          for f in demo-data/statement.csv demo-data/statement-2.csv demo-data/statement.xlsx \
-                   docs/screenshot-review.png docs/screenshot-home.png; do
-            [ -f "$f" ] || continue
-            # Only add assets the repository does not have yet; never churn tracked ones.
-            if git ls-files --error-unmatch "$f" > /dev/null 2>&1; then continue; fi
-            git add -f "$f"
-          done
+          if [ "${{ steps.check.outputs.stale }}" = "1" ]; then
+            # Refresh everything generated, but only mark the version as built when the
+            # screenshots succeeded — otherwise the next push retries.
+            for f in $ASSETS; do [ -f "$f" ] && git add -f "$f"; done
+            if [ "${{ steps.shots.outputs.ok }}" = "1" ]; then
+              echo "${{ steps.check.outputs.wanted }}" > docs/.assets-built
+              git add docs/.assets-built
+            fi
+          else
+            for f in $ASSETS; do
+              [ -f "$f" ] || continue
+              # Only add assets the repository does not have yet; never churn tracked ones.
+              if git ls-files --error-unmatch "$f" > /dev/null 2>&1; then continue; fi
+              git add -f "$f"
+            done
+          fi
           if git diff --cached --quiet; then
             echo "nothing to commit" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          git commit -m "chore: add generated synthetic demo statements and README screenshots"
+          git commit -m "chore: regenerate synthetic demo assets and README screenshots"
           git push
+          # A push made with GITHUB_TOKEN does not start other workflows; dispatch CI explicitly.
+          gh workflow run ci.yml --ref main

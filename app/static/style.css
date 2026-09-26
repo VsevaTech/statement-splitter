@@ -70,3 +70,48 @@ select.needs { border-color: var(--warn); background: var(--warn-bg); }
 .mapping-form select, .mapping-form input { max-width: none; font-size: 14px; color: var(--text); padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; }
 .switch { display: flex; gap: 8px; align-items: center; cursor: pointer; }
 .footer { text-align: center; color: var(--muted); font-size: 12px; padding: 24px; }
+
+/* ---------------------------------------------------------------- financial integrity */
+.integrity-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.integrity-head h2 { margin: 0; }
+.checks { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 8px; }
+.check { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: #fbfcfd; }
+.check > div { flex: 1; }
+.check .icon { width: 26px; height: 26px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; flex: none; background: #eef1f5; color: var(--muted); }
+.check.ok .icon { background: var(--ok-bg); color: var(--ok); }
+.check.warn { border-color: #f5c98b; background: var(--warn-bg); }
+.check.warn .icon { background: #fde2b8; color: var(--warn); }
+.check .diff { font-weight: 700; color: var(--warn); font-variant-numeric: tabular-nums; }
+.audit-line { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
+.pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #eef1f5; color: var(--muted); }
+.pill.ok { background: var(--ok-bg); color: var(--ok); }
+.pill.warn { background: #fde2b8; color: var(--warn); }
+.ok-text { color: var(--ok); font-weight: 600; }
+.warn-text { color: var(--warn); font-weight: 600; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.money-table { margin-top: 4px; }
+details.balances { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; }
+details.balances summary { cursor: pointer; font-weight: 600; }
+.balance-forms { display: grid; gap: 8px; }
+.balance-form { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.balance-form .cur { font-weight: 700; min-width: 40px; padding-bottom: 8px; }
+.balance-form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.balance-form input { font: inherit; font-size: 14px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; width: 160px; color: var(--text); font-variant-numeric: tabular-nums; }
+.tag { font-size: 11px; color: #1d4ed8; }
+.count { font-size: 13px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: #eef1f5; margin-left: 6px; }
+.attention-card { border-color: #f5c98b; }
+.attention-card h2 { color: var(--warn); }
+.attention-card h3, .ignored-card h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); margin: 14px 0 6px; }
+.skipped-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.skipped { display: grid; grid-template-columns: 80px 1fr auto; gap: 12px; align-items: center; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); }
+.skipped.warn { background: var(--warn-bg); border-color: #f5c98b; }
+.skipped.info { background: #fbfcfd; }
+.skipped-row-no { font-weight: 600; font-size: 13px; color: var(--muted); }
+.skipped .cells { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-word; }
+code.reason { font-size: 11px; padding: 2px 7px; border-radius: 6px; }
+code.reason.warn { background: #fde2b8; color: var(--warn); }
+code.reason.info { background: #eef1f5; color: var(--muted); }
+.reviewed-form { margin-top: 14px; }
+@media (max-width: 640px) { .skipped { grid-template-columns: 1fr; } }
+.skipped .cells .sep { color: #c0c6cf; margin: 0 8px; }
+.skipped .cells .bad-cell { background: #fde2b8; color: var(--danger); font-weight: 700; padding: 1px 5px; border-radius: 4px; text-decoration: underline wavy var(--danger); text-underline-offset: 3px; }

@@ -9,7 +9,7 @@ from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -23,11 +23,14 @@ from app.config import settings
 from app.db import PendingUpload, Statement, Transaction, get_session, init_db
 from app.export import export_workbook
 from app.importer import SUPPORTED_EXTENSIONS, StatementImportError
-from app.transform import TransformError
+from app.money import format_money
+from app.transform import REASON_TEXT, TransformError
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
-templates.env.globals.update(categories=ALL_CATEGORIES, version=__version__)
+templates.env.globals.update(categories=ALL_CATEGORIES, version=__version__, reason_text=REASON_TEXT)
+templates.env.filters["money"] = format_money
+templates.env.filters["signed_money"] = lambda v: format_money(v, signed=True)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 # Quiet down access logs so request bodies/filenames never end up in logs by accident.
@@ -164,7 +167,14 @@ def mapping_submit(
 
 # ---------------------------------------------------------------- review
 @app.get("/statements/{statement_id}", response_class=HTMLResponse)
-def review(request: Request, session: DB, statement_id: str, filter: str | None = None):
+def review(
+    request: Request,
+    session: DB,
+    statement_id: str,
+    filter: str | None = None,
+    balance_error: str | None = None,
+    balance_saved: str | None = None,
+):
     statement = _statement_or_404(session, statement_id)
     flt = _filter(filter)
     return templates.TemplateResponse(
@@ -177,7 +187,92 @@ def review(request: Request, session: DB, statement_id: str, filter: str | None 
             summary=services.statement_summary(session, statement_id),
             transactions=services.list_transactions(session, statement_id, flt),
             current_filter=flt,
+            integrity=services.integrity_report(session, statement),
+            balance_error=balance_error,
+            balance_saved=balance_saved,
         ),
+    )
+
+
+@app.get("/statements/{statement_id}/skipped", response_class=HTMLResponse)
+def skipped_rows_page(request: Request, session: DB, statement_id: str):
+    statement = _statement_or_404(session, statement_id)
+    return templates.TemplateResponse(
+        request,
+        "skipped.html",
+        _ctx(
+            request,
+            session,
+            statement=statement,
+            groups=services.skipped_rows(statement),
+            integrity=services.integrity_report(session, statement),
+            row_cells=services.row_cells,
+        ),
+    )
+
+
+@app.post("/statements/{statement_id}/audit-reviewed")
+def audit_reviewed(session: DB, statement_id: str, reviewed: str = Form("on")):
+    statement = _statement_or_404(session, statement_id)
+    services.mark_audit_reviewed(session, statement, reviewed == "on")
+    return RedirectResponse(f"/statements/{statement_id}", 303)
+
+
+@app.post("/statements/{statement_id}/skipped/clear-details")
+def clear_skipped_details(session: DB, statement_id: str):
+    statement = _statement_or_404(session, statement_id)
+    services.clear_skipped_details(session, statement)
+    return RedirectResponse(f"/statements/{statement_id}/skipped", 303)
+
+
+@app.post("/statements/{statement_id}/balances")
+def save_balances(
+    session: DB,
+    statement_id: str,
+    currency: str = Form(...),
+    opening: str = Form(""),
+    closing: str = Form(""),
+):
+    statement = _statement_or_404(session, statement_id)
+    try:
+        services.set_balance(session, statement, currency, opening, closing)
+    except services.BalanceInputError as exc:
+        return RedirectResponse(f"/statements/{statement_id}?balance_error={quote(str(exc))}#integrity", 303)
+    return RedirectResponse(f"/statements/{statement_id}?balance_saved={quote(currency.upper())}#integrity", 303)
+
+
+# ---------------------------------------------------------------- JSON API (money as decimal strings)
+@app.get("/api/statements/{statement_id}")
+def api_statement(session: DB, statement_id: str):
+    statement = _statement_or_404(session, statement_id)
+    report = services.integrity_report(session, statement)
+    return JSONResponse(
+        {
+            "id": statement.id,
+            "filename": statement.filename,
+            "created_at": statement.created_at.isoformat(),
+            **report.to_json(),
+        }
+    )
+
+
+@app.get("/api/statements/{statement_id}/skipped-rows")
+def api_skipped_rows(session: DB, statement_id: str):
+    statement = _statement_or_404(session, statement_id)
+    return JSONResponse(
+        {
+            "statement_id": statement.id,
+            "rows": [
+                {
+                    "source_row": r.source_row,
+                    "status": r.status,
+                    "reason": r.reason,
+                    "imported": r.imported,
+                    "cells": services.row_cells(r),
+                }
+                for r in statement.skipped_rows
+            ],
+        }
     )
 
 
@@ -261,8 +356,11 @@ def apply_similar(
 
 @app.get("/statements/{statement_id}/export")
 def export(session: DB, statement_id: str):
-    _statement_or_404(session, statement_id)
-    data = export_workbook(services.list_transactions(session, statement_id, "all"))
+    statement = _statement_or_404(session, statement_id)
+    data = export_workbook(
+        services.list_transactions(session, statement_id, "all"),
+        services.integrity_report(session, statement),
+    )
     return Response(
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

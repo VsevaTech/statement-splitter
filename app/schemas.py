@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -16,7 +17,7 @@ class NormalizedTransaction(BaseModel):
     date: dt.date | None
     description: str
     normalized_merchant: str
-    amount: float
+    amount: Decimal
     currency: str = Field(min_length=3, max_length=3)
     direction: Direction
     category: str | None = None

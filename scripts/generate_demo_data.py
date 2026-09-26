@@ -2,9 +2,15 @@
 
     python scripts/generate_demo_data.py
 
-Writes demo-data/statement.csv, demo-data/statement.xlsx (same month,
-Debit/Credit layout) and demo-data/statement-2.csv (next month, ';' delimiter,
-decimal comma — contains the same unknown merchants as the first statement).
+Writes
+  demo-data/statement.csv      300 transactions + opening/closing balance lines, an empty row,
+                               a TOTAL footer and one malformed amount (305 source rows)
+  demo-data/statement.xlsx     the same month in a Debit/Credit/Balance layout
+  demo-data/statement-2.csv    next month, ';' delimiter, decimal comma — same unknown merchants
+  demo-data/statement-balanced.csv    tiny statement that reconciles exactly (difference 0.00)
+  demo-data/statement-unbalanced.csv  the same with a closing balance 12.40 lower than expected
+
+All balances are computed with Decimal, so the demo reconciles to the cent.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import random
+from decimal import Decimal
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -100,7 +107,20 @@ def _amount(rng: tuple[float, float], rnd: random.Random) -> float:
     return round(lo if lo == hi else rnd.uniform(lo, hi), 2)
 
 
-def make_month(year: int, month: int, seed: int, target: int) -> list[tuple[dt.date, str, float, str]]:
+# Deterministic tricky values: 0.10 + 0.20 + 0.30 must total exactly 0.60, plus one large amount.
+TRICKY = [
+    (3, "FX COMMISSION 000010", -0.10, "ILS"),
+    (3, "FX COMMISSION 000020", -0.20, "ILS"),
+    (3, "FX COMMISSION 000030", -0.30, "ILS"),
+    (15, "INCOMING TRANSFER ACME DIGITAL LTD INV-9001", 123456.78, "ILS"),
+]
+OPENING_ILS = Decimal("12450.30")
+MALFORMED_AMOUNT = "12.3O"  # letter O instead of zero — must be flagged, never read as 12.3 or 0
+
+
+def make_month(
+    year: int, month: int, seed: int, target: int, *, tricky: bool = False
+) -> list[tuple[dt.date, str, float, str]]:
     rnd = random.Random(seed)
     days = (dt.date(year + (month == 12), (month % 12) + 1, 1) - dt.date(year, month, 1)).days
     rows: list[tuple[dt.date, str, float, str]] = []
@@ -116,12 +136,18 @@ def make_month(year: int, month: int, seed: int, target: int) -> list[tuple[dt.d
         rows.append(
             (dt.date(year, month, min(days, rnd.randint(1, 10))), _fill(template, rnd), -_amount(rng, rnd), cur)
         )
+    if tricky:
+        rows += [(dt.date(year, month, day), desc, amount, cur) for day, desc, amount, cur in TRICKY]
     add(BANK, 6, -1)
     add(TAXES, 3, -1)
     add(INCOME, 11, +1)
     add(FREQUENT, max(0, target - len(rows)), -1)
     rows.sort(key=lambda r: (r[0], r[1]))
     return rows
+
+
+def dec(amount: float) -> Decimal:
+    return Decimal(f"{amount:.2f}")
 
 
 def write_csv(path: Path, rows, *, delimiter=",", decimal=".", datefmt="%Y-%m-%d") -> None:
@@ -133,26 +159,81 @@ def write_csv(path: Path, rows, *, delimiter=",", decimal=".", datefmt="%Y-%m-%d
             w.writerow([d.strftime(datefmt), desc, amount, cur])
 
 
-def write_xlsx_debit_credit(path: Path, rows) -> None:
+def ils_totals(rows) -> tuple[Decimal, Decimal, Decimal]:
+    """(net movement, credits, debits) of the ILS transactions, exact."""
+    amounts = [dec(a) for _d, _desc, a, cur in rows if cur == "ILS"]
+    credits = sum((a for a in amounts if a > 0), Decimal("0.00"))
+    debits = sum((-a for a in amounts if a < 0), Decimal("0.00"))
+    return credits - debits, credits, debits
+
+
+def write_audit_csv(path: Path, rows, year: int, month: int) -> None:
+    """statement.csv: transactions framed by balance lines, plus an empty row, a malformed row and a footer."""
+    net, _credits, _debits = ils_totals(rows)
+    first, last = dt.date(year, month, 1), rows[-1][0]
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["Date", "Description", "Amount", "Currency"])
+        w.writerow([first.isoformat(), "Opening balance", f"{OPENING_ILS}", "ILS"])
+        for i, (d, desc, amt, cur) in enumerate(rows):
+            if i == 150:
+                w.writerow([])  # empty row in the middle of the statement
+            if i == 200:
+                w.writerow([d.isoformat(), "COFFEE SHOP ABC", MALFORMED_AMOUNT, "ILS"])
+            w.writerow([d.isoformat(), desc, f"{amt:.2f}", cur])
+        w.writerow([last.isoformat(), "Closing balance", f"{OPENING_ILS + net}", "ILS"])
+        w.writerow(["", "TOTAL ILS", f"{net}", "ILS"])
+
+
+def write_xlsx_debit_credit(path: Path, rows, year: int, month: int) -> None:
+    net, credits, debits = ils_totals(rows)
     wb = Workbook()
     ws = wb.active
     ws.title = "Statement"
-    ws.append(["Transaction Date", "Details", "Debit", "Credit", "Currency"])
-    for d, desc, amt, cur in rows:
-        ws.append([d, desc, abs(amt) if amt < 0 else None, amt if amt > 0 else None, cur])
+    ws.append(["Transaction Date", "Details", "Debit", "Credit", "Currency", "Balance"])
+    ws.append([dt.date(year, month, 1), "Opening balance", None, None, "ILS", OPENING_ILS])
+    for i, (d, desc, amt, cur) in enumerate(rows):
+        if i == 150:
+            ws.append([])
+        if i == 200:
+            ws.append([d, "COFFEE SHOP ABC", MALFORMED_AMOUNT, None, "ILS", None])
+        ws.append([d, desc, abs(dec(amt)) if amt < 0 else None, dec(amt) if amt > 0 else None, cur, None])
+    ws.append([rows[-1][0], "Closing balance", None, None, "ILS", OPENING_ILS + net])
+    ws.append([None, "TOTAL ILS", debits, credits, "ILS", None])
     for cell in ws["A"][1:]:
         cell.number_format = "yyyy-mm-dd"
+    for col in ("C", "D", "F"):
+        for cell in ws[col][1:]:
+            cell.number_format = "#,##0.00"
     wb.save(path)
+
+
+def write_small_fixture(path: Path, closing: str) -> None:
+    """Opening 1000.00 + 500.10 − 200.20 − 100.30 → expected closing 1199.60."""
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["Date", "Description", "Amount", "Currency"])
+        w.writerow(["2024-11-01", "Opening balance", "1000.00", "ILS"])
+        w.writerow(["2024-11-03", "INCOMING TRANSFER ACME DIGITAL LTD INV-2001", "500.10", "ILS"])
+        w.writerow(["2024-11-08", "OFFICE DEPOT 1182", "-200.20", "ILS"])
+        w.writerow(["2024-11-15", "WOLT IL 551020", "-100.30", "ILS"])
+        w.writerow(["2024-11-30", "Closing balance", closing, "ILS"])
 
 
 def main() -> None:
     OUT.mkdir(exist_ok=True)
-    month1 = make_month(2024, 9, SEED, 300)
+    month1 = make_month(2024, 9, SEED, 300, tricky=True)
     month2 = make_month(2024, 10, SEED + 1, 140)
-    write_csv(OUT / "statement.csv", month1)
-    write_xlsx_debit_credit(OUT / "statement.xlsx", month1)
+    write_audit_csv(OUT / "statement.csv", month1, 2024, 9)
+    write_xlsx_debit_credit(OUT / "statement.xlsx", month1, 2024, 9)
     write_csv(OUT / "statement-2.csv", month2, delimiter=";", decimal=",", datefmt="%d.%m.%Y")
-    print(f"statement.csv / statement.xlsx: {len(month1)} rows; statement-2.csv: {len(month2)} rows")
+    write_small_fixture(OUT / "statement-balanced.csv", "1199.60")
+    write_small_fixture(OUT / "statement-unbalanced.csv", "1187.20")  # 12.40 short
+    net, _c, _d = ils_totals(month1)
+    print(
+        f"statement.csv / statement.xlsx: {len(month1)} transactions + 5 audit rows "
+        f"(ILS {OPENING_ILS} + {net} = {OPENING_ILS + net}); statement-2.csv: {len(month2)} rows"
+    )
 
 
 if __name__ == "__main__":

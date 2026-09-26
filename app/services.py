@@ -12,9 +12,11 @@ from app.ai import GeminiClient
 from app.categories import is_valid_category
 from app.categorize import categorize, load_rules, save_rule, summarize
 from app.columns import ColumnMapping, detect_columns
-from app.db import MerchantRule, PendingUpload, Setting, Statement, Transaction
+from app.db import MerchantRule, PendingUpload, Setting, SkippedRow, Statement, StatementBalance, Transaction
 from app.importer import RawTable, read_statement
-from app.transform import normalize_rows
+from app.integrity import IntegrityReport, build_report
+from app.parsing import normalize_currency, parse_amount
+from app.transform import RowStatus, TransformError, analyze_rows
 
 USE_AI_KEY = "use_ai"
 
@@ -52,6 +54,7 @@ def create_pending_upload(session: Session, filename: str, data: bytes) -> tuple
         filename=filename,
         columns_json=json.dumps(table.columns, ensure_ascii=False),
         rows_json=json.dumps(table.rows, ensure_ascii=False),
+        row_numbers_json=json.dumps(table.row_numbers),
         detected_json=mapping.model_dump_json(),
     )
     session.add(pending)
@@ -63,6 +66,10 @@ def pending_table(pending: PendingUpload) -> tuple[list[str], list[list[str]]]:
     return json.loads(pending.columns_json), json.loads(pending.rows_json)
 
 
+def pending_row_numbers(pending: PendingUpload) -> list[int] | None:
+    return json.loads(pending.row_numbers_json) if pending.row_numbers_json else None
+
+
 def finalize_upload(
     session: Session,
     pending: PendingUpload,
@@ -72,13 +79,47 @@ def finalize_upload(
     ai_client: GeminiClient | None = None,
 ) -> Statement:
     columns, rows = pending_table(pending)
-    normalized = normalize_rows(columns, rows, mapping)
+    analysis = analyze_rows(columns, rows, mapping, pending_row_numbers(pending))
+    normalized = analysis.transactions
+    if not normalized:
+        raise TransformError("No transactions could be read with this column mapping.")
     if use_ai is None:
         use_ai = ai_enabled(session)
     categorize(normalized, load_rules(session), use_ai=use_ai, ai_client=ai_client)
 
-    statement = Statement(id=str(uuid.uuid4()), filename=pending.filename)
+    statement = Statement(
+        id=str(uuid.uuid4()),
+        filename=pending.filename,
+        source_rows=analysis.source_rows,
+        imported_rows=analysis.imported,
+        ignored_rows=analysis.ignored,
+        not_imported_rows=analysis.not_imported,
+        audit_reviewed=False,
+    )
     session.add(statement)
+    for outcome in analysis.outcomes:
+        session.add(
+            SkippedRow(
+                statement_id=statement.id,
+                source_row=outcome.source_row,
+                status=outcome.status.value,
+                reason=outcome.reason.value if outcome.reason else "UNRECOGNIZED_ROW",
+                imported=outcome.imported,
+                cell_index=outcome.cell_index,
+                cells_json=json.dumps(outcome.cells, ensure_ascii=False) if outcome.cells else None,
+            )
+        )
+    by_currency: dict[str, StatementBalance] = {}
+    for found in analysis.balances:
+        bal = by_currency.get(found.currency)
+        if bal is None:
+            bal = StatementBalance(statement_id=statement.id, currency=found.currency, confirmed=False)
+            by_currency[found.currency] = bal
+            session.add(bal)
+        if found.kind == "opening":
+            bal.opening, bal.opening_source, bal.opening_row = found.amount, "detected", found.source_row
+        else:
+            bal.closing, bal.closing_source, bal.closing_row = found.amount, "detected", found.source_row
     for tx in normalized:
         session.add(
             Transaction(
@@ -174,6 +215,89 @@ def similar_count(session: Session, statement_id: str, merchant_key: str) -> int
         )
         or 0
     )
+
+
+# ---------------------------------------------------------------- integrity
+def integrity_report(session: Session, statement: Statement) -> IntegrityReport:
+    return build_report(statement, list_transactions(session, statement.id, "all"))
+
+
+def skipped_rows(statement: Statement) -> dict[str, list[SkippedRow]]:
+    """Rows that need attention first (not imported, then imported with a warning), then ignored rows."""
+    attention = [r for r in statement.skipped_rows if r.status == RowStatus.ATTENTION.value]
+    return {
+        "not_imported": [r for r in attention if not r.imported],
+        "warnings": [r for r in attention if r.imported],
+        "ignored": [r for r in statement.skipped_rows if r.status == RowStatus.IGNORED.value],
+    }
+
+
+def row_cells(row: SkippedRow) -> list[str]:
+    return json.loads(row.cells_json) if row.cells_json else []
+
+
+def mark_audit_reviewed(session: Session, statement: Statement, reviewed: bool = True) -> None:
+    statement.audit_reviewed = reviewed
+    session.commit()
+
+
+def clear_skipped_details(session: Session, statement: Statement) -> int:
+    """Drop the raw cells of skipped rows; reason codes and counts stay."""
+    count = 0
+    for row in statement.skipped_rows:
+        if row.cells_json is not None:
+            row.cells_json = None
+            count += 1
+    session.commit()
+    return count
+
+
+class BalanceInputError(ValueError):
+    pass
+
+
+def set_balance(
+    session: Session,
+    statement: Statement,
+    currency: str,
+    opening: str | None,
+    closing: str | None,
+) -> StatementBalance:
+    """Store user-entered/confirmed balances for one currency. Empty input clears the value.
+
+    An unparseable value raises BalanceInputError — it never becomes 0.
+    """
+    iso = normalize_currency(currency, default="")
+    if len(iso) != 3:
+        raise BalanceInputError("Choose a valid currency")
+
+    def parse(label: str, text: str | None):
+        text = (text or "").strip()
+        if not text:
+            return None
+        value = parse_amount(text)
+        if value is None:
+            raise BalanceInputError(f"{label} is not a valid amount")
+        return value
+
+    opening_value, closing_value = parse("Opening balance", opening), parse("Closing balance", closing)
+    bal = next((b for b in statement.balances if b.currency == iso), None)
+    if bal is None:
+        bal = StatementBalance(statement_id=statement.id, currency=iso)
+        session.add(bal)
+        statement.balances.append(bal)
+    if opening_value != bal.opening or bal.opening_source != "detected":
+        bal.opening_source = "manual" if opening_value is not None else None
+        bal.opening_row = None
+    if closing_value != bal.closing or bal.closing_source != "detected":
+        bal.closing_source = "manual" if closing_value is not None else None
+        bal.closing_row = None
+    bal.opening, bal.closing, bal.confirmed = opening_value, closing_value, True
+    if opening_value is None and closing_value is None:
+        statement.balances.remove(bal)
+        session.delete(bal)
+    session.commit()
+    return bal
 
 
 def delete_statement(session: Session, statement: Statement) -> None:
