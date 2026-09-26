@@ -24,15 +24,26 @@ jobs:
       - name: Demo data is reproducible (also builds statement.xlsx for the tests)
         run: |
           python scripts/generate_demo_data.py
-          git diff --exit-code -- demo-data/statement.csv demo-data/statement-2.csv
+          git diff --exit-code -- demo-data/statement.csv demo-data/statement-2.csv \
+            demo-data/statement-balanced.csv demo-data/statement-unbalanced.csv
       - name: Pytest
         run: pytest
+      - name: Demo financial integrity (305 = 300 + 4 + 1, balanced 0.00, unbalanced -12.40)
+        run: python scripts/check_demo_integrity.py
 
   docker:
     runs-on: ubuntu-latest
     needs: lint-and-test
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Regenerate synthetic demo data (statement.xlsx is a generated binary)
+        run: |
+          pip install -r requirements.txt
+          python scripts/generate_demo_data.py
+          git diff --exit-code -- demo-data/*.csv
       - name: Build image
         run: docker build -t statement-splitter:ci .
       - name: Smoke test container
@@ -44,4 +55,8 @@ jobs:
           done
           [ "${ok:-0}" = "1" ] || (docker logs ss; exit 1)
           curl -fs -o /dev/null -w "%{http_code}\n" http://localhost:8000/
-          docker rm -f ss
+      - name: Demo financial integrity against the container
+        run: python scripts/check_demo_integrity.py http://localhost:8000
+      - name: Stop container
+        if: always()
+        run: docker rm -f ss || true

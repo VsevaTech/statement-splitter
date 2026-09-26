@@ -3,11 +3,13 @@
     pip install playwright && playwright install chromium
     python scripts/take_screenshots.py [base_url]
 
-Uploads demo-data/statement.csv, opens the review screen and saves PNGs to docs/.
+Uploads demo-data/statement.csv, opens the review and skipped-rows screens and saves PNGs to docs/.
+Set PLAYWRIGHT_CHROMIUM_EXECUTABLE to use an already installed Chromium.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -30,10 +32,14 @@ def main(base_url: str = "http://localhost:8000") -> None:
             raise SystemExit(f"upload failed: HTTP {resp.status_code} {resp.text[:200]}")
         statement_path = resp.headers["location"]
     with sync_playwright() as pw:
-        browser = pw.chromium.launch()
+        executable = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or None
+        browser = pw.chromium.launch(executable_path=executable)
         page = browser.new_page(viewport={"width": 1280, "height": 860})
         page.goto(f"{base_url}{statement_path}?filter=review", wait_until="networkidle")
         page.screenshot(path=str(DOCS / "screenshot-review.png"))
+        page.locator("#integrity").screenshot(path=str(DOCS / "screenshot-integrity.png"))
+        page.goto(f"{base_url}{statement_path}/skipped", wait_until="networkidle")
+        page.screenshot(path=str(DOCS / "screenshot-skipped-rows.png"), full_page=True)
         page.goto(f"{base_url}/", wait_until="networkidle")
         page.screenshot(path=str(DOCS / "screenshot-home.png"))
         browser.close()
