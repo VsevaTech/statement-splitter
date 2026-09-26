@@ -47,7 +47,7 @@ def parse_amount(value: object) -> Decimal | None:
         return None
     if isinstance(value, (int, float, Decimal)):
         return to_decimal(value)
-    text = str(value).strip().replace("\xa0", " ").replace(" ", " ").replace("−", "-")
+    text = str(value).strip().replace("\xa0", " ").replace("\N{NARROW NO-BREAK SPACE}", " ").replace("−", "-")
     if not text:
         return None
     if _SCIENTIFIC.fullmatch(text):  # typed numeric spreadsheet cells, e.g. '1e+16'
