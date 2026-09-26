@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 
 import pytest
 
@@ -12,24 +13,24 @@ from app.transform import TransformError, normalize_rows
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("-46.80", -46.80),
-        ("46.80", 46.80),
-        ("1,234.56", 1234.56),
-        ("1.234,56", 1234.56),
-        ("1 234,56", 1234.56),
-        ("-45,90", -45.90),
-        ("(12.00)", -12.00),
-        ("12.00-", -12.00),
-        ("₪ 45.90", 45.90),
-        ("$1,000", 1000.0),
-        ("12,50 EUR", 12.50),
-        ("+300", 300.0),
-        ("1.234.567", 1234567.0),
-        ("−15.5", -15.5),  # unicode minus
+        ("-46.80", Decimal("-46.80")),
+        ("46.80", Decimal("46.80")),
+        ("1,234.56", Decimal("1234.56")),
+        ("1.234,56", Decimal("1234.56")),
+        ("1 234,56", Decimal("1234.56")),
+        ("-45,90", Decimal("-45.90")),
+        ("(12.00)", Decimal("-12.00")),
+        ("12.00-", Decimal("-12.00")),
+        ("₪ 45.90", Decimal("45.90")),
+        ("$1,000", Decimal("1000.0")),
+        ("12,50 EUR", Decimal("12.50")),
+        ("+300", Decimal("300.0")),
+        ("1.234.567", Decimal("1234567.0")),
+        ("−15.5", Decimal("-15.5")),  # unicode minus
     ],
 )
 def test_parse_amount(raw, expected):
-    assert parse_amount(raw) == pytest.approx(expected)
+    assert parse_amount(raw) == expected  # exact Decimal, no approx needed
 
 
 @pytest.mark.parametrize("raw", ["", "abc", "N/A", None, "12-34", "1,23,45"])
@@ -104,7 +105,7 @@ def test_manual_mapping_and_direction_column():
     mapping = ColumnMapping(date="When", description="Who", amount="Value", direction="DrCr", default_currency="usd")
     txs = normalize_rows(cols, rows, mapping)
     assert [t.direction for t in txs] == ["credit", "debit"]
-    assert [t.amount for t in txs] == [1000.0, -45.90]
+    assert [t.amount for t in txs] == [Decimal("1000"), Decimal("-45.90")]
     assert {t.currency for t in txs} == {"USD"}
 
 

@@ -185,6 +185,8 @@ def test_export_xlsx_endpoint(client):
     assert wb.sheetnames == ["Transactions", "Summary"]
     assert wb["Transactions"].max_row == 7
     summary = [tuple(c.value for c in r) for r in wb["Summary"].iter_rows(min_row=2)]
+    # The per-category table ends at the first blank row; the import-integrity section follows it.
+    summary = summary[: next((i for i, r in enumerate(summary) if not any(r)), len(summary))]
     currencies = {r[3] for r in summary}
     assert currencies == {"ILS", "USD", "EUR"}
 
@@ -236,3 +238,31 @@ def test_demo_scenario_end_to_end(client, session):
         hits = [t for t in txs2 if t.normalized_merchant == key]
         assert hits, key
         assert all(t.category == cat and t.category_source == "rule" for t in hits), key
+
+
+def test_demo_with_audit_rows_keeps_categorization_rules_bulk_and_exact_export(client, session):
+    """Regression: the extended demo (balance/footer/empty/malformed rows) does not disturb categorization."""
+    from decimal import Decimal
+
+    sid = _statement_id(_upload(client, "statement.csv", (DEMO / "statement.csv").read_bytes()))
+    txs = session.scalars(select(Transaction).where(Transaction.statement_id == sid)).all()
+    assert len(txs) == 300
+    assert not any("balance" in t.description.lower() or t.description.startswith("TOTAL") for t in txs)
+    cercli = _tx_by_desc(session, sid, "CERCLI")
+    assert cercli.category is None
+    client.post(f"/transactions/{cercli.id}/category", data={"category": c.ACCOUNTING, "remember": "on"})
+    resp = client.post(f"/statements/{sid}/apply-similar", data={"merchant_key": "DOCUSIGN", "category": c.SOFTWARE})
+    assert resp.status_code == 200
+    wb = load_workbook(io.BytesIO(client.get(f"/statements/{sid}/export").content))
+    session.expire_all()
+    expected: dict[tuple[str, str], Decimal] = {}
+    for t in session.scalars(select(Transaction).where(Transaction.statement_id == sid)):
+        key = (t.category or "Needs review", t.currency)
+        expected[key] = expected.get(key, Decimal("0")) + t.amount
+    rows = [tuple(x.value for x in r) for r in wb["Summary"].iter_rows(min_row=2)]
+    table = rows[: next(i for i, r in enumerate(rows) if not any(r))]
+    got = {(cat, cur): Decimal(str(total)) for cat, _n, total, cur in table}
+    assert got == expected
+    assert got[(c.ACCOUNTING, "ILS")] == Decimal("-450.00")
+    sid2 = _statement_id(_upload(client, "statement-2.csv", (DEMO / "statement-2.csv").read_bytes()))
+    assert _tx_by_desc(session, sid2, "CERCLI").category_source == "rule"
