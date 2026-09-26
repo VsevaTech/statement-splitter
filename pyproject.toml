@@ -1,6 +1,6 @@
 [project]
 name = "statement-splitter"
-version = "0.1.0"
+version = "0.2.0"
 description = "Turn messy bank statements into categorized expense reports — and teach the app your merchants as you go."
 readme = "README.md"
 requires-python = ">=3.12"

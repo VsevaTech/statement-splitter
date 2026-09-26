@@ -1,0 +1,139 @@
+{% set s = integrity.import_summary %}
+<section class="card integrity" id="integrity">
+  <div class="integrity-head">
+    <h2>Financial integrity</h2>
+    <span class="muted small">Checks that this import is complete and consistent — a review aid, not an accounting audit.</span>
+  </div>
+
+  <ul class="checks">
+    <li class="check ok">
+      <span class="icon" aria-hidden="true">✓</span>
+      <div><strong>Exact decimal arithmetic</strong>
+        <div class="muted small">Amounts are stored and summed as exact decimals — no floating-point rounding.</div></div>
+    </li>
+
+    {% if not s.available %}
+    <li class="check info">
+      <span class="icon" aria-hidden="true">–</span>
+      <div><strong>Import audit not available</strong>
+        <div class="muted small">This statement was imported before row auditing existed. Re-upload the file to audit it.</div></div>
+    </li>
+    {% else %}
+    {% set attention = s.needs_attention %}
+    <li class="check {{ 'warn' if attention and not integrity.audit_reviewed else 'ok' }}">
+      <span class="icon" aria-hidden="true">{{ '⚠' if attention and not integrity.audit_reviewed else '✓' }}</span>
+      <div>
+        {% if not attention %}
+          <strong>{{ s.imported }} / {{ s.source_rows }} rows imported</strong>
+        {% elif integrity.audit_reviewed %}
+          <strong>Import reviewed</strong>
+        {% else %}
+          <strong>{{ attention }} row{{ 's' if attention != 1 }} need{{ 's' if attention == 1 }} attention</strong>
+        {% endif %}
+        <div class="audit-line">
+          <span class="pill">{{ s.source_rows }} source rows</span>
+          <span class="pill ok">{{ s.imported }} imported</span>
+          {% if s.ignored %}<span class="pill">{{ s.ignored }} ignored</span>{% endif %}
+          {% if attention and integrity.audit_reviewed %}<span class="pill">{{ attention }} flagged · reviewed</span>
+          {% elif attention %}<span class="pill warn">{{ attention }} need{{ 's' if attention == 1 }} attention</span>{% endif %}
+          {% if s.imported_with_warnings %}<span class="muted small">({{ s.imported_with_warnings }} imported with a warning)</span>{% endif %}
+        </div>
+      </div>
+      {% if s.ignored or attention %}
+      <a class="button small {{ 'primary' if attention and not integrity.audit_reviewed }}" href="/statements/{{ statement.id }}/skipped">Review skipped rows</a>
+      {% endif %}
+    </li>
+    {% endif %}
+
+    {% for b in integrity.balance_checks %}
+      {% if b.status == 'balanced' %}
+      <li class="check ok">
+        <span class="icon" aria-hidden="true">✓</span>
+        <div><strong>Statement balance reconciled{% if integrity.balance_checks|length > 1 or integrity.totals|length > 1 %} · {{ b.currency }}{% endif %}</strong>
+          <div class="muted small">Difference: {{ b.difference | money }} {{ b.currency }}
+            {% if b.detected_unconfirmed %} · using balances detected in the file — <a href="#balances" onclick="document.getElementById('balances').open = true">confirm</a>{% endif %}</div></div>
+      </li>
+      {% elif b.status == 'difference' %}
+      <li class="check warn">
+        <span class="icon" aria-hidden="true">⚠</span>
+        <div><strong>Statement balance difference · {{ b.currency }}</strong>
+          <div class="small"><span class="diff">{{ b.difference | signed_money }} {{ b.currency }}</span> · Needs review:
+            opening + net movement does not match the closing balance.</div></div>
+      </li>
+      {% else %}
+      <li class="check info">
+        <span class="icon" aria-hidden="true">–</span>
+        <div><strong>Balance check incomplete · {{ b.currency }}</strong>
+          <div class="muted small">Missing {{ b.missing | join(' and ') }}. <a href="#balances" onclick="document.getElementById('balances').open = true">Add it</a> to run the check.</div></div>
+      </li>
+      {% endif %}
+    {% else %}
+      <li class="check info">
+        <span class="icon" aria-hidden="true">–</span>
+        <div><strong>Balance check not run</strong>
+          <div class="muted small">No opening/closing balance found in the file. <a href="#balances" onclick="document.getElementById('balances').open = true">Enter them</a> to verify
+            opening + net movement = closing.</div></div>
+      </li>
+    {% endfor %}
+  </ul>
+
+  {% if balance_error %}<div class="alert error">{{ balance_error }}</div>{% endif %}
+  {% if balance_saved %}<div class="alert ok">Balances saved for {{ balance_saved }}.</div>{% endif %}
+
+  {% set checks = {} %}
+  {% for b in integrity.balance_checks %}{% set _ = checks.update({b.currency: b}) %}{% endfor %}
+  <div class="scroll">
+  <table class="compact money-table">
+    <thead><tr>
+      <th>Currency</th><th class="right">Opening</th><th class="right">Income</th><th class="right">Expenses</th>
+      <th class="right">Net movement</th><th class="right">Expected closing</th><th class="right">Actual closing</th>
+      <th class="right">Difference</th>
+    </tr></thead>
+    <tbody>
+    {% for t in integrity.totals %}
+      {% set b = checks.get(t.currency) %}
+      <tr>
+        <td><strong>{{ t.currency }}</strong></td>
+        <td class="right num">{{ b.opening | money if b and b.opening is not none else '—' }}</td>
+        <td class="right num pos">{{ t.income | money }}</td>
+        <td class="right num">{{ t.expenses | money }}</td>
+        <td class="right num">{{ t.net | signed_money }}</td>
+        <td class="right num">{{ b.expected_closing | money if b and b.expected_closing is not none else '—' }}</td>
+        <td class="right num">{{ b.actual_closing | money if b and b.actual_closing is not none else '—' }}</td>
+        <td class="right num">
+          {% if b and b.difference is not none %}
+            <span class="{{ 'ok-text' if b.status == 'balanced' else 'warn-text' }}">{{ b.difference | signed_money }}</span>
+          {% else %}—{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted small">Totals are per currency — different currencies are never added together. Net movement = income − expenses.</p>
+
+  <details class="balances" id="balances" {% if balance_error or balance_saved or not integrity.balance_checks %}open{% endif %}>
+    <summary>Opening &amp; closing balances</summary>
+    <p class="muted small">Balances are only taken from explicit “Opening balance” / “Closing balance” lines in the file — never guessed.
+       Confirm them or type them from your bank statement. Leave a field empty if you don't know it.</p>
+    <div class="balance-forms">
+    {% for t in integrity.totals %}
+      {% set b = checks.get(t.currency) %}
+      <form method="post" action="/statements/{{ statement.id }}/balances" class="balance-form">
+        <input type="hidden" name="currency" value="{{ t.currency }}">
+        <span class="cur">{{ t.currency }}</span>
+        <label>Opening balance
+          <input name="opening" inputmode="decimal" autocomplete="off" value="{{ b.opening if b and b.opening is not none else '' }}" placeholder="e.g. 12,450.30">
+          {% if b and b.opening_source == 'detected' %}<span class="tag">detected · row {{ b.opening_row }}</span>{% elif b and b.opening_source == 'manual' %}<span class="tag">entered</span>{% endif %}
+        </label>
+        <label>Closing balance
+          <input name="closing" inputmode="decimal" autocomplete="off" value="{{ b.actual_closing if b and b.actual_closing is not none else '' }}" placeholder="e.g. 18,828.93">
+          {% if b and b.closing_source == 'detected' %}<span class="tag">detected · row {{ b.closing_row }}</span>{% elif b and b.closing_source == 'manual' %}<span class="tag">entered</span>{% endif %}
+        </label>
+        <button type="submit" class="small {{ 'primary' if b and b.detected_unconfirmed }}">{{ 'Confirm' if b and b.detected_unconfirmed else 'Save' }}</button>
+        {% if b and b.confirmed %}<span class="muted small">✓ confirmed</span>{% endif %}
+      </form>
+    {% endfor %}
+    </div>
+  </details>
+</section>

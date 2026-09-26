@@ -4,7 +4,7 @@
     <div class="desc">{{ tx.description }}</div>
     <div class="muted small">{{ tx.normalized_merchant }}</div>
   </td>
-  <td class="right nowrap {{ 'pos' if tx.amount > 0 else 'neg' }}">{{ '%.2f' | format(tx.amount) }}</td>
+  <td class="right nowrap {{ 'pos' if tx.amount > 0 else 'neg' }}">{{ tx.amount | money }}</td>
   <td>{{ tx.currency }}</td>
   <td>
     <form hx-post="/transactions/{{ tx.id }}/category" hx-target="#table-region" hx-swap="innerHTML" hx-trigger="change from:select" class="cat-form">

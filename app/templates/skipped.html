@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Skipped rows · {{ statement.filename }}{% endblock %}
+{% block content %}
+{% set s = integrity.import_summary %}
+<div class="page-head">
+  <div>
+    <h1>Skipped rows</h1>
+    <p class="muted">{{ statement.filename }} · rows of the uploaded file that did not become normal transactions</p>
+  </div>
+  <div class="actions">
+    <a class="button" href="/statements/{{ statement.id }}">← Back to review</a>
+  </div>
+</div>
+
+{% if not s.available %}
+<div class="alert">This statement was imported before row auditing existed — no skipped-row details are available.</div>
+{% else %}
+<section class="summary">
+  <div class="stat"><span class="num">{{ s.source_rows }}</span><span>Source rows</span></div>
+  <div class="stat ok"><span class="num">{{ s.imported }}</span><span>Transactions</span></div>
+  <div class="stat"><span class="num">{{ s.ignored }}</span><span>Ignored</span></div>
+  <div class="stat {{ 'warn' if s.needs_attention }}"><span class="num">{{ s.needs_attention }}</span><span>Needs attention</span></div>
+</section>
+
+{% macro row_list(rows, kind) %}
+  <ul class="skipped-list {{ kind }}">
+  {% for r in rows %}
+    <li class="skipped {{ kind }}">
+      <div class="skipped-row-no">Row {{ r.source_row }}</div>
+      <div class="skipped-body">
+        {% set cells = row_cells(r) %}
+        <div class="cells">
+          {%- if cells | select | list -%}
+            {%- set ns = namespace(first=True) -%}
+            {%- for cell in cells -%}
+              {%- if cell -%}
+                {%- if not ns.first %}<span class="sep">|</span>{% endif -%}
+                {%- set ns.first = False -%}
+                {%- if loop.index0 == r.cell_index -%}
+                  <span class="cell bad-cell" title="This value could not be read">{{ cell }}</span>
+                {%- else -%}
+                  <span class="cell">{{ cell }}</span>
+                {%- endif -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- elif r.reason == 'EMPTY_ROW' -%}<span class="muted">(empty)</span>
+          {%- else -%}<span class="muted">(row contents cleared)</span>{%- endif -%}
+        </div>
+        <div class="muted small">{{ reason_text.get(r.reason, '') }}</div>
+      </div>
+      <code class="reason {{ kind }}">{{ r.reason }}</code>
+    </li>
+  {% endfor %}
+  </ul>
+{% endmacro %}
+
+{% set attention_total = groups.not_imported | length + groups.warnings | length %}
+<section class="card attention-card">
+  <h2>⚠ Needs attention <span class="count">{{ attention_total }}</span></h2>
+  {% if attention_total %}
+    <p class="muted small">These rows look like data but could not be read safely. Check them against your bank statement —
+       a transaction may be missing from the totals.</p>
+    {% if groups.not_imported %}<h3>Not imported</h3>{{ row_list(groups.not_imported, 'warn') }}{% endif %}
+    {% if groups.warnings %}<h3>Imported with a warning</h3>{{ row_list(groups.warnings, 'warn') }}{% endif %}
+    <form method="post" action="/statements/{{ statement.id }}/audit-reviewed" class="inline-form reviewed-form">
+      {% if statement.audit_reviewed %}
+        <input type="hidden" name="reviewed" value="off">
+        <span class="ok-text">✓ Marked as reviewed</span>
+        <button class="small" type="submit">Undo</button>
+      {% else %}
+        <input type="hidden" name="reviewed" value="on">
+        <button class="primary" type="submit">I've checked these rows</button>
+        <span class="muted small">Marks the import as reviewed. It does not change any data.</span>
+      {% endif %}
+    </form>
+  {% else %}
+    <p class="ok-text">Nothing needs attention — every row was either imported or safely ignored.</p>
+  {% endif %}
+</section>
+
+<section class="card ignored-card">
+  <h2>Ignored <span class="count muted">{{ groups.ignored | length }}</span></h2>
+  {% if groups.ignored %}
+    <p class="muted small">Recognized as non-transaction lines and safely skipped.</p>
+    {{ row_list(groups.ignored, 'info') }}
+  {% else %}
+    <p class="muted">No rows were ignored.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <p class="muted small">Row contents shown here come only from this upload. They are never written to application logs and are
+     deleted together with the statement.</p>
+  <form method="post" action="/statements/{{ statement.id }}/skipped/clear-details" class="inline">
+    <button class="small" type="submit">Clear row contents (keep reasons)</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}
