@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from decimal import Decimal
+
+from app.money import to_decimal
 
 _CURRENCY_SYMBOLS = {"₪": "ILS", "$": "USD", "€": "EUR", "£": "GBP", "₽": "RUB", "₴": "UAH"}
 _CURRENCY_WORDS = {"NIS": "ILS", "ILS": "ILS", "USD": "USD", "EUR": "EUR", "GBP": "GBP", "RUB": "RUB"}
-_AMOUNT_JUNK = re.compile(r"[^\d,.\-+()]")
+_CURRENCY_TOKENS = "|".join([re.escape(s) for s in _CURRENCY_SYMBOLS] + [r"\b[A-Z]{3}\b", r"\b(?:US|C|A|NZ|HK|S)\$"])
+_CURRENCY_AFFIX = re.compile(rf"^(?:{_CURRENCY_TOKENS})\.?\s*|\s*(?:{_CURRENCY_TOKENS})$")
+_DRCR = re.compile(r"\s+(CR|DR)\.?$|(?<=\d)(CR|DR)$", re.IGNORECASE)
+_NUMBER_CHARS = re.compile(r"[\d.,' ’]+")
+_SCIENTIFIC = re.compile(r"[+-]?\d+(?:\.\d+)?[eE][+-]?\d+")
+# Cells that mean "no value" in debit/credit columns.
+EMPTY_AMOUNT_MARKERS = frozenset({"-", "–", "—", "--"})
 _DATE_FORMATS = (
     "%Y-%m-%d",
     "%Y-%m-%dT%H:%M:%S",
@@ -26,57 +35,82 @@ _DATE_FORMATS = (
 )
 
 
-def parse_amount(value: object) -> float | None:
-    """Parse '1,234.56', '1 234,56', '-12.00', '(12.00)', '₪ 45.90', '12,50 EUR'.
+def parse_amount(value: object) -> Decimal | None:
+    """Parse '1,234.56', '1 234,56', '-12.00', '(12.00)', '₪ 45.90', '12,50 EUR' into an exact Decimal.
 
-    Returns None when the text is not an amount. Sign is preserved; parentheses
-    and a trailing minus mean negative.
+    Returns None when the text is not an amount — never 0 for garbage. Sign is
+    preserved; parentheses, a trailing minus and a trailing ``DR`` mean negative.
+    Only currency symbols/codes and ``CR``/``DR`` markers may surround the number:
+    anything else (``12.3O``, ``12abc``) is rejected rather than silently cleaned.
     """
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
-        return None if value != value else float(value)  # NaN guard
-    text = str(value).strip()
+    if isinstance(value, (int, float, Decimal)):
+        return to_decimal(value)
+    text = str(value).strip().replace("\xa0", " ").replace(" ", " ").replace("−", "-")
     if not text:
         return None
+    if _SCIENTIFIC.fullmatch(text):  # typed numeric spreadsheet cells, e.g. '1e+16'
+        return to_decimal(text)
+
     negative = False
+    marker = _DRCR.search(text)
+    if marker:
+        negative = (marker.group(1) or marker.group(2)).upper() == "DR"
+        text = text[: marker.start()].strip()
+    text = _strip_currency(text)
     if text.startswith("(") and text.endswith(")"):
-        negative, text = True, text[1:-1]
+        negative, text = True, text[1:-1].strip()
+    text = _strip_currency(text)
     if text.endswith("-"):
-        negative, text = True, text[:-1]
-    text = text.replace("−", "-").replace("\xa0", " ").replace(" ", "")
-    text = _AMOUNT_JUNK.sub("", text)
-    if not text or not re.search(r"\d", text):
-        return None
+        negative, text = True, text[:-1].strip()
     if text.startswith("-"):
-        negative, text = True, text[1:]
-    text = text.lstrip("+")
-    if "-" in text or "(" in text or ")" in text:
+        negative, text = True, text[1:].strip()
+    elif text.startswith("+"):
+        text = text[1:].strip()
+    text = _strip_currency(text)
+    if not _NUMBER_CHARS.fullmatch(text) or not re.search(r"\d", text):
         return None
+    text = text.replace(" ", "").replace("'", "").replace("’", "")
 
     if "," in text and "." in text:
-        # The last separator is the decimal separator.
+        # The last separator is the decimal separator; the other one must group by thousands.
         decimal_comma = text.rfind(",") > text.rfind(".")
-        text = text.replace(".", "").replace(",", ".") if decimal_comma else text.replace(",", "")
+        group, dec = (".", ",") if decimal_comma else (",", ".")
+        if text.count(dec) != 1:
+            return None
+        integer, fraction = text.split(dec)
+        groups = integer.split(group)
+        if not groups[0] or not all(len(g) == 3 for g in groups[1:]):
+            return None
+        text = "".join(groups) + "." + fraction
     elif "," in text:
         parts = text.split(",")
         if len(parts) == 2 and len(parts[1]) in (1, 2):
             text = parts[0] + "." + parts[1]  # decimal comma
-        elif all(len(p) == 3 for p in parts[1:]):
+        elif parts[0] and all(len(p) == 3 for p in parts[1:]):
             text = "".join(parts)  # thousands separators
         else:
             return None
     elif text.count(".") > 1:
         parts = text.split(".")
-        if all(len(p) == 3 for p in parts[1:]):
+        if parts[0] and all(len(p) == 3 for p in parts[1:]):
             text = "".join(parts)
         else:
             return None
-    try:
-        number = float(text)
-    except ValueError:
+    if not re.fullmatch(r"\d*\.?\d*", text) or text in ("", "."):
+        return None
+    number = to_decimal(text)
+    if number is None:
         return None
     return -number if negative else number
+
+
+def _strip_currency(text: str) -> str:
+    text = text.strip()
+    for _ in range(2):
+        text = _CURRENCY_AFFIX.sub("", text).strip()
+    return text
 
 
 def detect_currency_in_text(value: str) -> str | None:
