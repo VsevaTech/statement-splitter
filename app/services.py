@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
+import logging
 import uuid
 
 from sqlalchemy import delete, func, select
@@ -12,11 +14,14 @@ from app.ai import GeminiClient
 from app.categories import is_valid_category
 from app.categorize import categorize, load_rules, save_rule, summarize
 from app.columns import ColumnMapping, detect_columns
+from app.config import settings
 from app.db import MerchantRule, PendingUpload, Setting, SkippedRow, Statement, StatementBalance, Transaction
 from app.importer import RawTable, read_statement
 from app.integrity import IntegrityReport, build_report
 from app.parsing import normalize_currency, parse_amount
 from app.transform import RowStatus, TransformError, analyze_rows
+
+log = logging.getLogger(__name__)
 
 USE_AI_KEY = "use_ai"
 
@@ -60,6 +65,35 @@ def create_pending_upload(session: Session, filename: str, data: bytes) -> tuple
     session.add(pending)
     session.commit()
     return pending, mapping
+
+
+def _utcnow() -> dt.datetime:
+    return dt.datetime.now(dt.UTC).replace(tzinfo=None)  # same convention as db._now (naive UTC)
+
+
+def _pending_cutoff(now: dt.datetime | None, ttl_hours: float | None) -> dt.datetime:
+    ttl = settings.pending_upload_ttl_hours if ttl_hours is None else ttl_hours
+    return (now or _utcnow()) - dt.timedelta(hours=ttl)
+
+
+def is_pending_expired(
+    pending: PendingUpload, *, now: dt.datetime | None = None, ttl_hours: float | None = None
+) -> bool:
+    return pending.created_at < _pending_cutoff(now, ttl_hours)
+
+
+def cleanup_expired_uploads(session: Session, *, now: dt.datetime | None = None, ttl_hours: float | None = None) -> int:
+    """Delete raw rows of unfinished imports older than the TTL. Returns the number deleted.
+
+    Only ``pending_uploads`` is touched: finished statements, transactions and skipped rows
+    are never affected (the raw rows are already gone for those).
+    """
+    result = session.execute(delete(PendingUpload).where(PendingUpload.created_at < _pending_cutoff(now, ttl_hours)))
+    session.commit()
+    deleted = result.rowcount or 0
+    if deleted:
+        log.info("Deleted %d expired pending upload(s)", deleted)
+    return deleted
 
 
 def pending_table(pending: PendingUpload) -> tuple[list[str], list[list[str]]]:
