@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,7 +22,7 @@ from app.ai import UNAVAILABLE_MESSAGE, GeminiClient
 from app.categories import ALL_CATEGORIES
 from app.columns import ColumnMapping
 from app.config import settings
-from app.db import PendingUpload, Statement, Transaction, get_session, init_db
+from app.db import PendingUpload, SessionLocal, Statement, Transaction, get_session, init_db
 from app.export import export_workbook
 from app.importer import SUPPORTED_EXTENSIONS, StatementImportError
 from app.money import format_money
@@ -37,10 +39,32 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 
+def _run_cleanup() -> int:
+    with SessionLocal() as session:
+        return services.cleanup_expired_uploads(session)
+
+
+async def _cleanup_loop(interval_seconds: float) -> None:
+    """Periodic sweep so expired raw statement rows go away even if the app is never restarted."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await asyncio.to_thread(_run_cleanup)
+        except Exception:  # a failed sweep must never take the app down; retry next tick
+            logging.getLogger(__name__).exception("Pending upload cleanup failed")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    yield
+    _run_cleanup()  # at startup: do not rely on the container staying up
+    task = asyncio.create_task(_cleanup_loop(max(settings.cleanup_interval_minutes, 0.1) * 60))
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 app = FastAPI(title="Statement Splitter", version=__version__, lifespan=lifespan)
@@ -82,11 +106,36 @@ def home(request: Request, session: DB, error: str | None = None):
     )
 
 
+def _upload_gone(request: Request, session: Session, *, expired: bool) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "upload_expired.html",
+        _ctx(request, session, expired=expired, ttl_hours=settings.pending_upload_ttl_hours),
+        status_code=410,
+    )
+
+
+def _get_live_pending(
+    request: Request, session: Session, pending_id: str
+) -> tuple[PendingUpload | None, Response | None]:
+    """Return (pending, None), or (None, 410 page) when the upload expired / no longer exists."""
+    pending = session.get(PendingUpload, pending_id)
+    if pending is None:
+        return None, _upload_gone(request, session, expired=False)
+    if services.is_pending_expired(pending):
+        session.delete(pending)  # do not wait for the next sweep
+        session.commit()
+        return None, _upload_gone(request, session, expired=True)
+    return pending, None
+
+
 @app.post("/upload")
 async def upload(session: DB, file: UploadFile = File(...)):
     filename = file.filename or "statement.csv"
-    data = await file.read()
-    if len(data) > settings.max_upload_mb * 1024 * 1024:
+    limit = settings.max_upload_mb * 1024 * 1024
+    data = await file.read(limit + 1)  # never pull more than limit + 1 bytes into memory
+    if len(data) > limit:
+        del data
         return RedirectResponse(f"/?error={quote(f'File is larger than {settings.max_upload_mb} MB')}", 303)
     if not data:
         return RedirectResponse(f"/?error={quote('The uploaded file is empty')}", 303)
@@ -107,9 +156,9 @@ async def upload(session: DB, file: UploadFile = File(...)):
 # ---------------------------------------------------------------- column mapping
 @app.get("/uploads/{pending_id}/map", response_class=HTMLResponse)
 def mapping_form(request: Request, session: DB, pending_id: str, error: str | None = None):
-    pending = session.get(PendingUpload, pending_id)
-    if pending is None:
-        raise HTTPException(404, "Upload not found or already processed")
+    pending, gone = _get_live_pending(request, session, pending_id)
+    if gone is not None:
+        return gone
     columns, rows = services.pending_table(pending)
     detected = ColumnMapping.model_validate_json(pending.detected_json)
     return templates.TemplateResponse(
@@ -130,6 +179,7 @@ def mapping_form(request: Request, session: DB, pending_id: str, error: str | No
 
 @app.post("/uploads/{pending_id}/map")
 def mapping_submit(
+    request: Request,
     session: DB,
     pending_id: str,
     date: str = Form(""),
@@ -141,9 +191,9 @@ def mapping_submit(
     direction: str = Form(""),
     default_currency: str = Form("ILS"),
 ):
-    pending = session.get(PendingUpload, pending_id)
-    if pending is None:
-        raise HTTPException(404, "Upload not found or already processed")
+    pending, gone = _get_live_pending(request, session, pending_id)
+    if gone is not None:
+        return gone
     mapping = ColumnMapping(
         date=date or None,
         description=description or None,

@@ -31,6 +31,18 @@ class Settings:
     ai_timeout_seconds: float = field(default_factory=lambda: float(os.environ.get("AI_TIMEOUT_SECONDS", "15")))
     ai_min_confidence: float = field(default_factory=lambda: float(os.environ.get("AI_MIN_CONFIDENCE", "0.6")))
     max_upload_mb: int = field(default_factory=lambda: int(os.environ.get("MAX_UPLOAD_MB", "10")))
+    # Upper bound for the *decompressed* size of an .xlsx (a small zip can inflate enormously).
+    max_xlsx_uncompressed_mb: int = field(default_factory=lambda: int(os.environ.get("MAX_XLSX_UNCOMPRESSED_MB", "50")))
+    max_rows: int = field(default_factory=lambda: int(os.environ.get("MAX_ROWS", "100000")))
+    max_columns: int = field(default_factory=lambda: int(os.environ.get("MAX_COLUMNS", "100")))
+    # Raw parsed rows of an unfinished import are deleted after this many hours.
+    pending_upload_ttl_hours: float = field(
+        default_factory=lambda: float(os.environ.get("PENDING_UPLOAD_TTL_HOURS", "24"))
+    )
+    # How often the background sweep runs while the app is up (minutes).
+    cleanup_interval_minutes: float = field(
+        default_factory=lambda: float(os.environ.get("CLEANUP_INTERVAL_MINUTES", "15"))
+    )
 
     @property
     def ai_configured(self) -> bool:

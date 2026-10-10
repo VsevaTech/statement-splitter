@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Upload expired · Statement Splitter{% endblock %}
+{% block content %}
+<section class="card">
+  {% if expired %}
+  <h1>Upload expired</h1>
+  <p>The temporary statement data has been deleted.</p>
+  <p>Please upload your statement again.</p>
+  {% else %}
+  <h1>Upload not found</h1>
+  <p>This import was already completed, or its temporary statement data has been deleted
+     (unfinished imports are removed after {{ ttl_hours | round(1) | string | replace('.0', '') }} hours).</p>
+  <p>Please upload your statement again.</p>
+  {% endif %}
+  <p><a class="button primary" href="/">Upload a statement</a></p>
+</section>
+{% endblock %}

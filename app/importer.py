@@ -8,11 +8,21 @@ from __future__ import annotations
 
 import csv
 import io
+import zipfile
 from dataclasses import dataclass, field
 
 from openpyxl import load_workbook
 
-SUPPORTED_EXTENSIONS = (".csv", ".xlsx", ".xls", ".txt")
+from app.config import settings
+
+# Only formats we can actually parse. Legacy binary .xls is NOT supported: openpyxl reads the
+# zipped OOXML format only, so listing .xls here would accept files that can never be read.
+SUPPORTED_EXTENSIONS = (".csv", ".xlsx", ".txt")
+_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # legacy .xls / .doc container
+_MAX_ZIP_ENTRIES = 2000
+LEGACY_XLS_MESSAGE = (
+    "Legacy .xls files are not supported. Please re-save the statement as .xlsx or .csv and upload it again."
+)
 _CANDIDATE_DELIMITERS = [",", ";", "\t", "|"]
 _FALLBACK_ENCODINGS = ["utf-8-sig", "utf-8", "cp1255", "cp1251", "cp1252", "latin-1"]
 _SINGLE_BYTE_CANDIDATES = ["cp1251", "cp1255", "cp1252", "iso-8859-8", "koi8-r", "cp1250"]
@@ -39,6 +49,35 @@ class RawTable:
 
     def preview(self, n: int = 10) -> list[list[str]]:
         return self.rows[:n]
+
+
+def _check_table_limits(rows: int, columns: int) -> None:
+    if columns > settings.max_columns:
+        raise StatementImportError(f"The file has too many columns (limit: {settings.max_columns}).")
+    if rows > settings.max_rows:
+        raise StatementImportError(f"The file has too many rows (limit: {settings.max_rows}).")
+
+
+def check_xlsx_container(data: bytes) -> None:
+    """Validate the zip container *before* openpyxl inflates it.
+
+    A few KB of zip can expand to gigabytes, so the declared uncompressed sizes are summed
+    and compared with the limit. Malformed archives are rejected with a normal import error.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            infos = zf.infolist()
+            if len(infos) > _MAX_ZIP_ENTRIES:
+                raise StatementImportError("The Excel file is not a valid workbook (too many internal files).")
+            total = sum(i.file_size for i in infos)
+            limit = settings.max_xlsx_uncompressed_mb * 1024 * 1024
+            if total > limit:
+                raise StatementImportError(
+                    f"The Excel file expands to more than {settings.max_xlsx_uncompressed_mb} MB uncompressed, "
+                    "which is over the limit."
+                )
+    except zipfile.BadZipFile as exc:
+        raise StatementImportError("The file is not a valid .xlsx workbook (corrupted or not an Excel file).") from exc
 
 
 def detect_encoding(data: bytes) -> str:
@@ -172,6 +211,10 @@ def read_csv_bytes(data: bytes) -> RawTable:
     line = 1
     try:
         for cells in reader:
+            if len(records) >= settings.max_rows + 1:  # +1: the header row
+                raise StatementImportError(f"The file has too many rows (limit: {settings.max_rows}).")
+            if len(cells) > settings.max_columns:
+                raise StatementImportError(f"The file has too many columns (limit: {settings.max_columns}).")
             records.append((line, [_clean_cell(c) for c in cells]))
             line = reader.line_num + 1
     except csv.Error as exc:
@@ -183,15 +226,20 @@ def read_csv_bytes(data: bytes) -> RawTable:
 
 
 def read_xlsx_bytes(data: bytes, sheet: str | int = 0) -> RawTable:
+    check_xlsx_container(data)
     try:
         wb = load_workbook(io.BytesIO(data), data_only=True)
         ws = wb.worksheets[sheet] if isinstance(sheet, int) else wb[sheet]
+        # Declared sheet dimensions can be huge for a nearly empty sheet: check before iterating.
+        _check_table_limits(ws.max_row or 0, ws.max_column or 0)
         records = [
             (number, [_clean_cell(v) for v in values])
             for number, values in enumerate(ws.iter_rows(values_only=True), start=1)
         ]
+    except StatementImportError:
+        raise
     except Exception as exc:
-        raise StatementImportError(f"Could not read the Excel file: {exc}") from exc
+        raise StatementImportError("Could not read the Excel file. It may be corrupted or password-protected.") from exc
     columns, rows, numbers = _build_table(records, drop_empty_columns=True)
     if len(columns) < 2 or not rows:
         raise StatementImportError("The first sheet does not contain a table with at least two columns.")
@@ -199,8 +247,20 @@ def read_xlsx_bytes(data: bytes, sheet: str | int = 0) -> RawTable:
 
 
 def read_statement(filename: str, data: bytes) -> RawTable:
+    """Parse an uploaded statement. Only ``StatementImportError`` ever escapes."""
+    try:
+        return _read_statement(filename, data)
+    except StatementImportError:
+        raise
+    except Exception as exc:  # never leak a traceback / 500 for a malformed file
+        raise StatementImportError("The file could not be read as a bank statement.") from exc
+
+
+def _read_statement(filename: str, data: bytes) -> RawTable:
     name = filename.lower()
-    if name.endswith((".xlsx", ".xls")):
+    if name.endswith(".xls") or data[:8] == _OLE_MAGIC:
+        raise StatementImportError(LEGACY_XLS_MESSAGE)
+    if name.endswith(".xlsx"):
         return read_xlsx_bytes(data)
     if name.endswith((".csv", ".txt")):
         return read_csv_bytes(data)
