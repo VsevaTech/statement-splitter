@@ -153,6 +153,8 @@ This scenario is also an automated test: `tests/test_web_flow.py::test_demo_scen
 
 - `.csv` / `.txt`: delimiter sniffed from the first lines; encoding detected (UTF-8 with/without BOM first, then Windows code pages via `charset-normalizer`).
 - `.xlsx`: first sheet, via `openpyxl`; dates and numbers are read as typed cells.
+- Not supported: legacy binary `.xls` (re-save as `.xlsx` or `.csv`) — such files are rejected with a clear message, never silently misread.
+- Upload limits (all configurable, see [Safe import limits](#safe-import-limits)): file size, decompressed `.xlsx` size, rows and columns. Oversized or malformed files are rejected with a plain error message — no stack trace, nothing stored.
 - Amounts: `-46.80`, `1,234.56`, `1.234,56`, `1 234,56`, `1234,56`, `(12.00)`, `12.00-`, `12.00 DR` / `CR`, `1'234.50`, `₪ 45.90`, `12,50 EUR`. Only currency symbols/codes and Dr/Cr markers may surround the number; anything else makes the amount unreadable and the row is flagged. `-`/`—` in a Debit/Credit cell means empty. As before, one separator followed by exactly three digits is a thousands separator (`1,234` → 1234) and a single `.` is the decimal point (`1.234` → 1.234).
 - Either one signed **Amount** column, or separate **Debit / Credit** columns, optionally a **Dr/Cr** indicator column.
 - Currency from a column, from a symbol/code inside the amount cell, or a default you choose (ILS by default).
@@ -209,11 +211,23 @@ Unknown merchants can be sent to **Gemini Flash** (Google AI Studio free tier) w
 
 Without a key the UI shows `AI suggestions unavailable` and everything else works normally. The response is parsed with a Pydantic schema, categories outside the allowed list are discarded, and suggestions below `AI_MIN_CONFIDENCE` (0.6) stay in *Needs review*. Network errors, timeouts and malformed responses degrade to "no suggestion".
 
+## Safe import limits
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MAX_UPLOAD_MB` | `10` | Max upload size. At most `limit + 1` bytes are read into memory, so an oversized file is rejected without being loaded. |
+| `MAX_XLSX_UNCOMPRESSED_MB` | `50` | Max *decompressed* size of an `.xlsx` (a tiny zip can inflate to gigabytes). Checked from the zip directory before `openpyxl` opens it. |
+| `MAX_ROWS` | `100000` | Max rows per file (including a sheet's declared dimension). |
+| `MAX_COLUMNS` | `100` | Max columns per file. |
+| `PENDING_UPLOAD_TTL_HOURS` | `24` | Lifetime of raw rows of an unfinished import. |
+| `CLEANUP_INTERVAL_MINUTES` | `15` | How often the background sweep runs. |
+
 ## Privacy
 
 > AI suggestions are optional. Only unknown merchant descriptions are sent to the configured AI provider.
 
 - The uploaded file is parsed in memory and never written to disk. Raw rows are kept in SQLite only until the column mapping is confirmed, then deleted; only the normalized transactions remain (you can delete a statement from the home page at any time).
+- **Unfinished imports expire.** If you leave the column-mapping screen open and walk away, the raw rows are deleted after `PENDING_UPLOAD_TTL_HOURS` (default 24). Cleanup runs at startup and every `CLEANUP_INTERVAL_MINUTES` (default 15) while the app is up; opening an expired import shows *Upload expired — the temporary statement data has been deleted. Please upload your statement again.* Completed statements are never touched.
 - Statement contents are never logged; access logs are reduced and AI failures log only the exception class.
 - The AI provider receives **normalized merchant keys of unknown merchants only** — no amounts, dates, balances, account details or the full statement. One batched request per upload.
 - The API key lives in the environment only — never in the database; `.env` is git-ignored.
@@ -250,7 +264,7 @@ app/
   templates/, static/
 scripts/generate_demo_data.py   synthetic statements (deterministic)
 scripts/check_demo_integrity.py deterministic demo integrity check (CI)
-tests/                          pytest (170 tests), no network
+tests/                          pytest (200 tests), no network
 ```
 
 Stack: Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2, SQLite, pandas, openpyxl, Jinja2 + HTMX, httpx, pytest, ruff, Docker.
@@ -258,12 +272,12 @@ Stack: Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2, SQLite, pandas, openpyxl
 ## Tests
 
 ```bash
-pytest            # 170 tests, ~8 s, no network / no AI key needed
+pytest            # 200 tests, ~8 s, no network / no AI key needed
 ruff check .
 ruff format --check .
 ```
 
-Covered: CSV/XLSX import, delimiter and encoding detection, column detection and manual mapping, amount parsing, debit/credit, currencies, merchant normalization, built-in rules, saved rules (and their priority over built-ins), unknown merchants, AI disabled / malformed response / timeout / disallowed category, category correction, rule persistence, bulk apply, XLSX export, multi-currency summary, the full learn-then-reupload scenario and the demo scenario — plus Decimal arithmetic (0.1 + 0.2, 0.10 + 0.20 + 0.30 = 0.60, large values, many-row aggregation, category/currency totals, XLSX, SQLite round trip), every import-audit reason and count, balance detection and reconciliation (balanced, unbalanced, multi-currency, missing balances, manual entry), formula-injection escaping, no raw rows in logs and the v0.1 → v0.2 database migration.
+Covered: CSV/XLSX import, delimiter and encoding detection, column detection and manual mapping, amount parsing, debit/credit, currencies, merchant normalization, built-in rules, saved rules (and their priority over built-ins), unknown merchants, AI disabled / malformed response / timeout / disallowed category, category correction, rule persistence, bulk apply, XLSX export, multi-currency summary, the full learn-then-reupload scenario and the demo scenario — plus Decimal arithmetic (0.1 + 0.2, 0.10 + 0.20 + 0.30 = 0.60, large values, many-row aggregation, category/currency totals, XLSX, SQLite round trip), every import-audit reason and count, balance detection and reconciliation (balanced, unbalanced, multi-currency, missing balances, manual entry), formula-injection escaping, no raw rows in logs, the v0.1 → v0.2 database migration, pending-upload expiry (23 h kept / 25 h deleted, completed statements untouched, startup + periodic sweep), bounded uploads (size, zip-bomb `.xlsx`, rows, columns, malformed and legacy `.xls` files).
 
 Generated binaries (`demo-data/statement.xlsx`, `docs/*.png`) are rebuilt by `.github/workflows/bootstrap-assets.yml` whenever `docs/ASSETS_VERSION` changes; CI regenerates the demo data itself, so it never depends on a stale binary.
 
